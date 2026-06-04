@@ -1,0 +1,476 @@
+[
+    {
+        "id": "6388e9b3320f62d9",
+        "type": "tab",
+        "label": "Flow 4",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "155e20ec63760b06",
+        "type": "ui-template",
+        "z": "6388e9b3320f62d9",
+        "group": "a888dc27bf6c8b4a",
+        "page": "",
+        "ui": "",
+        "name": "PIN Board",
+        "order": 2,
+        "width": 0,
+        "height": 0,
+        "head": "",
+        "format": "<template>\n    <div class=\"main\">\n        <div class=\"display\">\n            <span v-if=\"isValidating\" class=\"placeholder system-msg\">Waiting...</span>\n            <span v-else-if=\"pin.length > 0\" class=\"mask\">{{ pinMask }}</span>\n            <span v-else class=\"placeholder\">{{ placeholderText }}</span>\n        </div>\n\n        <div class=\"keypad\">\n            <button :disabled=\"isValidating\" @click=\"press('1')\">1</button>\n            <button :disabled=\"isValidating\" @click=\"press('2')\">2</button>\n            <button :disabled=\"isValidating\" @click=\"press('3')\">3</button>\n\n            <button :disabled=\"isValidating\" @click=\"press('4')\">4</button>\n            <button :disabled=\"isValidating\" @click=\"press('5')\">5</button>\n            <button :disabled=\"isValidating\" @click=\"press('6')\">6</button>\n\n            <button :disabled=\"isValidating\" @click=\"press('7')\">7</button>\n            <button :disabled=\"isValidating\" @click=\"press('8')\">8</button>\n            <button :disabled=\"isValidating\" @click=\"press('9')\">9</button>\n\n            <button class=\"btn-clear\" :disabled=\"isValidating\" @click=\"clearPin()\">C</button>\n            <button :disabled=\"isValidating\" @click=\"press('0')\">0</button>\n            <button class=\"btn-ok\" :disabled=\"isValidating\" @click=\"confirm()\">OK</button>\n        </div>\n    </div>\n</template>\n\n<script>\n    export default {\n    data() {\n        return {\n            pin: \"\",\n            mode: \"normal\", // 'normal', 'current_password', 'new_password', 'confirm_password'\n            oldPassword: \"\", \n            tempPassword: \"\", \n            isValidating: false // Trava a tela enquanto espera o Node-RED\n        };\n    },\n    computed: {\n        pinMask() {\n            return \"*\".repeat(this.pin.length);\n        },\n        placeholderText() {\n            if (this.mode === 'normal') return \"put your password\";\n            if (this.mode === 'current_password') return \"put old password\";\n            if (this.mode === 'new_password') return \"put new password\";\n            if (this.mode === 'confirm_password') return \"confirm new password\";\n            return \"\";\n        }\n    },\n    watch: {\n        // Fica escutando as mensagens de volta do Node-RED\n        msg: function (newMsg) {\n            if (newMsg && newMsg.payload) {\n                if (newMsg.payload.action === \"update_password_response\") {\n                    this.isValidating = false; // Destrava a tela\n                    \n                    if (newMsg.payload.success === true) {\n                        alert(\"Senha alterada com sucesso!\");\n                    } else {\n                        // Caso a senha antiga não bata lá no backend, por exemplo\n                        alert(\"Erro ao alterar: \" + (newMsg.payload.message || \"Senha antiga incorreta.\"));\n                    }\n                    \n                    this.resetToNormal();\n                }\n                else if (newMsg.payload.action === \"login_response\") {\n                    if (newMsg.payload.success === true) {\n                        alert(\"Login OK. Alarme \" + (newMsg.payload.armed ? \"ARMADO\" : \"DESARMADO\"));\n                    } else {\n                        alert(\"PIN inválido\");\n                    }\n                }\n            }\n        }\n    },\n    methods: {\n        press(value) {\n            if (this.pin.length < 6) {\n                this.pin += value;\n            }\n        },\n        clearPin() {\n            if (this.pin === \"\" && this.mode !== 'normal') {\n                this.resetToNormal();\n            } else {\n                this.pin = \"\";\n            }\n        },\n        resetToNormal() {\n            this.mode = 'normal';\n            this.oldPassword = \"\";\n            this.tempPassword = \"\";\n            this.pin = \"\";\n            this.isValidating = false;\n        },\n        confirm() {\n            let uuid = this.generateUUID();\n            let dynamicTopic = `IPB/IoT/AlarmProject/Notifications/Personal/${uuid}`;\n            \n            if (this.pin.length === 0) return;\n\n            if (this.mode === 'normal') {\n                if (this.pin === '000000') {\n                    this.mode = 'current_password';\n                    this.pin = \"\";\n                } else {\n                    this.send({ \n                        topic: dynamicTopic,\n                        payload: \n                        { \n                            action: \"login\", \n                            pin: this.pin,\n                            uuid: uuid\n                        } \n                    });\n                    this.pin = \"\";\n                }\n            } \n            \n            else if (this.mode === 'current_password') {\n                this.oldPassword = this.pin;\n                this.mode = 'new_password';\n                this.pin = \"\";\n            }\n            \n            else if (this.mode === 'new_password') {\n                this.tempPassword = this.pin;\n                this.mode = 'confirm_password';\n                this.pin = \"\";\n            } \n            \n            else if (this.mode === 'confirm_password') {\n                if (this.pin === this.tempPassword) {\n                    // Ativa a tela de bloqueio \"Waiting...\"\n                    this.isValidating = true;\n                    \n                    // Envia os dados e NÃO reseta. Fica aguardando a resposta no 'watch'\n                    this.send({ \n                        topic: dynamicTopic,\n                        payload: { \n                            action: \"update_password\", \n                            old_password: this.oldPassword,\n                            new_password: this.pin,\n                            uuid: uuid\n                        } \n                    });\n                    \n                } else {\n                    alert(\"As senhas não coincidem. Digite a nova senha novamente.\");\n                    this.mode = 'new_password';\n                    this.tempPassword = \"\";\n                    this.pin = \"\";\n                }\n            }\n        },\n        generateUUID() {\n        // Tenta usar a API nativa do navegador primeiro (mais rápida e segura)\n        if (window.crypto && crypto.randomUUID) {\n            return crypto.randomUUID();\n        }\n        // Fallback matemático caso esteja rodando em HTTP local sem SSL\n        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n            const r = Math.random() * 16 | 0, \n                  v = c === 'x' ? r : (r & 0x3 | 0x8);\n            return v.toString(16);\n        });\n        }\n    }\n};\n</script>\n\n<style>\n    .main {\n        width: 320px;\n        margin: 50px auto;\n        background-color: #2c3e50;\n        padding: 30px;\n        border-radius: 24px;\n        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);\n        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\n    }\n\n    .display {\n        width: 100%;\n        height: 80px;\n        margin-bottom: 30px;\n        background: #0a0a0a;\n        text-align: center;\n        border-radius: 12px;\n        box-shadow: inset 0 0 15px rgba(0, 255, 0, 0.15);\n        box-sizing: border-box;\n        display: flex;\n        align-items: center;\n        justify-content: center;\n    }\n\n    .mask {\n        color: #00ff00;\n        font-size: 40px;\n        font-family: 'Courier New', Courier, monospace;\n        letter-spacing: 12px;\n    }\n\n    .placeholder {\n        color: #555;\n        font-size: 16px;\n        font-weight: bold;\n        letter-spacing: 1px;\n        text-transform: uppercase;\n        animation: pulse 2s infinite;\n    }\n\n    .system-msg {\n        color: #e67e22;\n        /* Laranja para destacar o estado de carregamento */\n    }\n\n    @keyframes pulse {\n\n        0%,\n        100% {\n            opacity: 0.5;\n        }\n\n        50% {\n            opacity: 1;\n        }\n    }\n\n    .keypad {\n        display: grid;\n        grid-template-columns: repeat(3, 1fr);\n        gap: 20px;\n        justify-items: center;\n    }\n\n    button {\n        width: 75px;\n        height: 75px;\n        background-color: #34495e;\n        border: none;\n        border-radius: 50%;\n        color: white;\n        font-size: 28px;\n        font-weight: 600;\n        cursor: pointer;\n        transition: all 0.2s ease;\n        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);\n    }\n\n    button:hover:not(:disabled) {\n        background-color: #415b76;\n        transform: translateY(-2px);\n        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);\n    }\n\n    button:active:not(:disabled) {\n        transform: translateY(2px);\n        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    }\n\n    button:disabled {\n        opacity: 0.4;\n        cursor: not-allowed;\n    }\n\n    .btn-clear {\n        background-color: #e74c3c;\n        font-size: 24px;\n    }\n\n    .btn-clear:hover:not(:disabled) {\n        background-color: #f16050;\n    }\n\n    .btn-ok {\n        background-color: #2ecc71;\n        font-size: 24px;\n    }\n\n    .btn-ok:hover:not(:disabled) {\n        background-color: #40d47e;\n    }\n</style>",
+        "storeOutMessages": true,
+        "passthru": false,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 470,
+        "y": 260,
+        "wires": [
+            [
+                "fe85162cd4255f0d",
+                "27c0a4092919dc3d"
+            ]
+        ]
+    },
+    {
+        "id": "3e8c3557696fc932",
+        "type": "rsa-encrypt",
+        "z": "6388e9b3320f62d9",
+        "name": "RSA Encrypt",
+        "publickey": "",
+        "x": 910,
+        "y": 400,
+        "wires": [
+            [
+                "cef8e720321c0bcd"
+            ]
+        ]
+    },
+    {
+        "id": "d1708251703e0478",
+        "type": "mqtt in",
+        "z": "6388e9b3320f62d9",
+        "name": "Dynamic Personal Topic",
+        "topic": "",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "4f53d0990669ddd8",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 1,
+        "x": 780,
+        "y": 60,
+        "wires": [
+            [
+                "4795e6c37313931c",
+                "2a29b938561dd8f8"
+            ]
+        ]
+    },
+    {
+        "id": "cc285b14bb68abae",
+        "type": "mqtt in",
+        "z": "6388e9b3320f62d9",
+        "name": "",
+        "topic": "IPB/IoT/AlarmProject/Crypto/PublicKey/",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "4f53d0990669ddd8",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 400,
+        "wires": [
+            [
+                "d0ad6c7d1e117f99",
+                "9fda89c5b03c1c80"
+            ]
+        ]
+    },
+    {
+        "id": "d0ad6c7d1e117f99",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Set Public Key",
+        "func": "msg.topic = \"public-key\"\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 560,
+        "y": 400,
+        "wires": [
+            [
+                "3e8c3557696fc932"
+            ]
+        ]
+    },
+    {
+        "id": "fe85162cd4255f0d",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Build Subscibe to Dynamic Topic",
+        "func": "msg = {\n    topic: msg.topic,\n    action: \"subscribe\"\n}\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 710,
+        "y": 260,
+        "wires": [
+            [
+                "d1708251703e0478",
+                "1e3fa0eed09ae845"
+            ]
+        ]
+    },
+    {
+        "id": "cef8e720321c0bcd",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Build Payload",
+        "func": "\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1100,
+        "y": 400,
+        "wires": [
+            [
+                "a897af245e6007fb",
+                "fb1dc3a2e6432d08"
+            ]
+        ]
+    },
+    {
+        "id": "a897af245e6007fb",
+        "type": "mqtt out",
+        "z": "6388e9b3320f62d9",
+        "name": "",
+        "topic": "IPB/IoT/AlarmProject/Notifications/Personal/",
+        "qos": "1",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "4f53d0990669ddd8",
+        "x": 1410,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "fb1dc3a2e6432d08",
+        "type": "debug",
+        "z": "6388e9b3320f62d9",
+        "name": "Payload to Notifications",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1410,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "9fda89c5b03c1c80",
+        "type": "debug",
+        "z": "6388e9b3320f62d9",
+        "name": "Public Key",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 550,
+        "y": 460,
+        "wires": []
+    },
+    {
+        "id": "1e3fa0eed09ae845",
+        "type": "debug",
+        "z": "6388e9b3320f62d9",
+        "name": "Get Dynamic Topic",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1070,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "7d2f455e14f2e258",
+        "type": "debug",
+        "z": "6388e9b3320f62d9",
+        "name": "Remove Dynamic Topic",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 970,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "27c0a4092919dc3d",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Remove Dynamic Topic",
+        "func": "msg = {\n    payload: msg.payload\n}\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 690,
+        "y": 340,
+        "wires": [
+            [
+                "3e8c3557696fc932",
+                "7d2f455e14f2e258"
+            ]
+        ]
+    },
+    {
+        "id": "4795e6c37313931c",
+        "type": "debug",
+        "z": "6388e9b3320f62d9",
+        "name": "Dynamic Topic",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1080,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "ef2b101931564a4f",
+        "type": "inject",
+        "z": "6388e9b3320f62d9",
+        "name": "Get Subscriptions (Warning: possible loop)",
+        "props": [
+            {
+                "p": "action",
+                "v": "getSubscriptions",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "x": 420,
+        "y": 60,
+        "wires": [
+            [
+                "d1708251703e0478"
+            ]
+        ]
+    },
+    {
+        "id": "fced5d230dc38964",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Send Unsubscribe",
+        "func": "if (msg.topic.startsWith(\"IPB/IoT/AlarmProject/Notifications/Personal/\")){\n    msg = {\n        action: \"unsubscribe\",\n        topic: msg.topic\n    }\n    return msg\n}\n\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 450,
+        "y": 160,
+        "wires": [
+            [
+                "d1708251703e0478"
+            ]
+        ]
+    },
+    {
+        "id": "2a29b938561dd8f8",
+        "type": "function",
+        "z": "6388e9b3320f62d9",
+        "name": "Is Response",
+        "func": "if (msg.topic.startsWith(\"IPB/IoT/AlarmProject/Notifications/Personal/\") && !msg.action){\n    return msg\n}\n\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1030,
+        "y": 160,
+        "wires": [
+            [
+                "fced5d230dc38964",
+                "155e20ec63760b06"
+            ]
+        ]
+    },
+    {
+        "id": "a888dc27bf6c8b4a",
+        "type": "ui-group",
+        "name": "Group 1",
+        "page": "5eac5c3260269525",
+        "width": 6,
+        "height": 1,
+        "order": 1,
+        "showTitle": true,
+        "className": "",
+        "visible": true,
+        "disabled": false,
+        "groupType": "default"
+    },
+    {
+        "id": "4f53d0990669ddd8",
+        "type": "mqtt-broker",
+        "name": "MQTT Dashboard",
+        "broker": "broker.mqtt-dashboard.com",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "5eac5c3260269525",
+        "type": "ui-page",
+        "name": "Page 1",
+        "ui": "74630aefdb8536b4",
+        "path": "/page1",
+        "icon": "home",
+        "layout": "grid",
+        "theme": "6b742a8e97c516fa",
+        "breakpoints": [
+            {
+                "name": "Default",
+                "px": 0,
+                "cols": 3
+            },
+            {
+                "name": "Tablet",
+                "px": 576,
+                "cols": 6
+            },
+            {
+                "name": "Small Desktop",
+                "px": 768,
+                "cols": 9
+            },
+            {
+                "name": "Desktop",
+                "px": 1024,
+                "cols": 12
+            }
+        ],
+        "order": 1,
+        "className": "",
+        "visible": "true",
+        "disabled": "false"
+    },
+    {
+        "id": "74630aefdb8536b4",
+        "type": "ui-base",
+        "name": "My Dashboard",
+        "path": "/dashboard",
+        "appIcon": "",
+        "includeClientData": true,
+        "acceptsClientConfig": [
+            "ui-notification",
+            "ui-control"
+        ],
+        "showPathInSidebar": false,
+        "headerContent": "page",
+        "navigationStyle": "default",
+        "titleBarStyle": "default",
+        "showReconnectNotification": true,
+        "notificationDisplayTime": 1,
+        "showDisconnectNotification": true,
+        "allowInstall": false
+    },
+    {
+        "id": "6b742a8e97c516fa",
+        "type": "ui-theme",
+        "name": "Default Theme",
+        "colors": {
+            "surface": "#ffffff",
+            "primary": "#0094CE",
+            "bgPage": "#eeeeee",
+            "groupBg": "#ffffff",
+            "groupOutline": "#cccccc"
+        },
+        "sizes": {
+            "density": "default",
+            "pagePadding": "12px",
+            "groupGap": "12px",
+            "groupBorderRadius": "4px",
+            "widgetGap": "12px"
+        }
+    },
+    {
+        "id": "6c1d957fcf4abe4a",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "@flowfuse/node-red-dashboard": "1.30.2",
+            "sense-rsa": "2.1.5"
+        }
+    }
+]

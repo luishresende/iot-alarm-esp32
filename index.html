@@ -1,0 +1,278 @@
+<template>
+    <div class="main">
+        <div class="display">
+            <span v-if="isValidating" class="placeholder system-msg">Waiting...</span>
+            <span v-else-if="pin.length > 0" class="mask">{{ pinMask }}</span>
+            <span v-else class="placeholder">{{ placeholderText }}</span>
+        </div>
+
+        <div class="keypad">
+            <button :disabled="isValidating" @click="press('1')">1</button>
+            <button :disabled="isValidating" @click="press('2')">2</button>
+            <button :disabled="isValidating" @click="press('3')">3</button>
+
+            <button :disabled="isValidating" @click="press('4')">4</button>
+            <button :disabled="isValidating" @click="press('5')">5</button>
+            <button :disabled="isValidating" @click="press('6')">6</button>
+
+            <button :disabled="isValidating" @click="press('7')">7</button>
+            <button :disabled="isValidating" @click="press('8')">8</button>
+            <button :disabled="isValidating" @click="press('9')">9</button>
+
+            <button class="btn-clear" :disabled="isValidating" @click="clearPin()">C</button>
+            <button :disabled="isValidating" @click="press('0')">0</button>
+            <button class="btn-ok" :disabled="isValidating" @click="confirm()">OK</button>
+        </div>
+    </div>
+</template>
+
+<script>
+    export default {
+    data() {
+        return {
+            pin: "",
+            mode: "normal", // 'normal', 'current_password', 'new_password', 'confirm_password'
+            oldPassword: "", 
+            tempPassword: "", 
+            isValidating: false // Trava a tela enquanto espera o Node-RED
+        };
+    },
+    computed: {
+        pinMask() {
+            return "*".repeat(this.pin.length);
+        },
+        placeholderText() {
+            if (this.mode === 'normal') return "put your password";
+            if (this.mode === 'current_password') return "put old password";
+            if (this.mode === 'new_password') return "put new password";
+            if (this.mode === 'confirm_password') return "confirm new password";
+            return "";
+        }
+    },
+    watch: {
+        // Fica escutando as mensagens de volta do Node-RED
+        msg: function (newMsg) {
+            if (newMsg && newMsg.payload) {
+                if (newMsg.payload.action === "update_password_response") {
+                    this.isValidating = false; // Destrava a tela
+                    
+                    if (newMsg.payload.success === true) {
+                        alert("Senha alterada com sucesso!");
+                    } else {
+                        // Caso a senha antiga não bata lá no backend, por exemplo
+                        alert("Erro ao alterar: " + (newMsg.payload.message || "Senha antiga incorreta."));
+                    }
+                    
+                    this.resetToNormal();
+                }
+            }
+        }
+    },
+    methods: {
+        press(value) {
+            if (this.pin.length < 6) {
+                this.pin += value;
+            }
+        },
+        clearPin() {
+            if (this.pin === "" && this.mode !== 'normal') {
+                this.resetToNormal();
+            } else {
+                this.pin = "";
+            }
+        },
+        resetToNormal() {
+            this.mode = 'normal';
+            this.oldPassword = "";
+            this.tempPassword = "";
+            this.pin = "";
+            this.isValidating = false;
+        },
+        confirm() {
+            let uuid = this.generateUUID();
+            let dynamicTopic = `IPB/IoT/AlarmProject/Notifications/Personal/${uuid}`;
+            
+            if (this.pin.length === 0) return;
+
+            if (this.mode === 'normal') {
+                if (this.pin === '000000') {
+                    this.mode = 'current_password';
+                    this.pin = "";
+                } else {
+                    this.send({ 
+                        topic: dynamicTopic,
+                        payload: 
+                        { 
+                            action: "login", 
+                            pin: this.pin,
+                            uuid: uuid
+                        } 
+                    });
+                    this.pin = "";
+                }
+            } 
+            
+            else if (this.mode === 'current_password') {
+                this.oldPassword = this.pin;
+                this.mode = 'new_password';
+                this.pin = "";
+            }
+            
+            else if (this.mode === 'new_password') {
+                this.tempPassword = this.pin;
+                this.mode = 'confirm_password';
+                this.pin = "";
+            } 
+            
+            else if (this.mode === 'confirm_password') {
+                if (this.pin === this.tempPassword) {
+                    // Ativa a tela de bloqueio "Waiting..."
+                    this.isValidating = true;
+                    
+                    // Envia os dados e NÃO reseta. Fica aguardando a resposta no 'watch'
+                    this.send({ 
+                        topic: dynamicTopic,
+                        payload: { 
+                            action: "update_password", 
+                            old_password: this.oldPassword,
+                            new_password: this.pin,
+                            uuid: uuid
+                        } 
+                    });
+                    
+                } else {
+                    alert("As senhas não coincidem. Digite a nova senha novamente.");
+                    this.mode = 'new_password';
+                    this.tempPassword = "";
+                    this.pin = "";
+                }
+            }
+        },
+        generateUUID() {
+        // Tenta usar a API nativa do navegador primeiro
+        if (window.crypto && crypto.randomUUID) {
+            return crypto.randomUUID();
+        }
+        // Fallback matemático caso esteja rodando em HTTP local sem SSL
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0, 
+                  v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+        }
+    }
+};
+</script>
+
+<style>
+    .main {
+        width: 320px;
+        margin: 50px auto;
+        background-color: #2c3e50;
+        padding: 30px;
+        border-radius: 24px;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .display {
+        width: 100%;
+        height: 80px;
+        margin-bottom: 30px;
+        background: #0a0a0a;
+        text-align: center;
+        border-radius: 12px;
+        box-shadow: inset 0 0 15px rgba(0, 255, 0, 0.15);
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .mask {
+        color: #00ff00;
+        font-size: 40px;
+        font-family: 'Courier New', Courier, monospace;
+        letter-spacing: 12px;
+    }
+
+    .placeholder {
+        color: #555;
+        font-size: 16px;
+        font-weight: bold;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        animation: pulse 2s infinite;
+    }
+
+    .system-msg {
+        color: #e67e22;
+    }
+
+    @keyframes pulse {
+
+        0%,
+        100% {
+            opacity: 0.5;
+        }
+
+        50% {
+            opacity: 1;
+        }
+    }
+
+    .keypad {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+        justify-items: center;
+    }
+
+    button {
+        width: 75px;
+        height: 75px;
+        background-color: #34495e;
+        border: none;
+        border-radius: 50%;
+        color: white;
+        font-size: 28px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+    }
+
+    button:hover:not(:disabled) {
+        background-color: #415b76;
+        transform: translateY(-2px);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    button:active:not(:disabled) {
+        transform: translateY(2px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    .btn-clear {
+        background-color: #e74c3c;
+        font-size: 24px;
+    }
+
+    .btn-clear:hover:not(:disabled) {
+        background-color: #f16050;
+    }
+
+    .btn-ok {
+        background-color: #2ecc71;
+        font-size: 24px;
+    }
+
+    .btn-ok:hover:not(:disabled) {
+        background-color: #40d47e;
+    }
+</style>        /* Laranja para destacar o estado de carregamento */        /* Laranja para destacar o estado de carregamento */</style>        /* Laranja para destacar o estado de carregamento */        /* Laranja para destacar o estado de carregamento */
